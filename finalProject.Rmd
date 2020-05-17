@@ -1,0 +1,259 @@
+---
+title: "Stock Return Evaluation in R"
+author: "Hanjiang Yu"
+date: "5/16/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+How to choose the right stock seems to be the question that many want to solve. There are many factors to choose from, earning-to-price ratio, cash flow-to-price ratio, etc. However, momentum could also be an important factor in choosing a stock. In this tutorial, we will walk through the key points in building a momentum portfolio using datascience tools like data pipeline, visualization, and exploratory analysis like regression and hypothesis testing. The way that we assess our portfolio performance is by holding the portfolio for a year and find the annual return of our portfolio.
+
+We would require the following r packages for this tutorial.
+
+```{r packages, include = TRUE, warning = FALSE, message = FALSE}
+library(tidyverse)
+library(ggplot2)
+library(lubridate)
+library(broom)
+```
+
+
+## Dataset
+
+The dataset is used using CRSP stock dataset that could be retrived through Wharton Research Database Service subscription.
+
+In stock performance evaluation, we would also use Fama-Franch data which could be retrived for free through https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html
+
+## 1. Data Preparatiojn
+
+### 1.1 Load Data
+
+Download CRSP data and put it in your R project folder. Load CRSP data using read_csv function.
+
+```{r intro, include = TRUE, warning = FALSE, message = FALSE}
+data = read_csv('crsp.csv')
+```
+
+### 1.2 Clean Data
+
+After loading the dataset, we should start working on clean our dataset and remove unnecessary columns.
+Using data pipeline, we would first select only PERMNO (unique identification of stock), date, and the return of the stock.
+Then, we would want to remove NAs from the data using na.omit().
+We would also want to change date into the correct date format. We can achive this result using ymd().
+For better processing we could separate year and month from the data using year() and month() function respectively.
+In order to preview our data, we can use head() function. 
+
+```{r cleanData, include = TRUE, warning= F}
+data = data %>%
+  select(PERMNO, date, RET)
+
+data = na.omit(data)
+
+data$date = ymd(data$date)
+
+data = data %>% 
+  rename(permno = PERMNO, ret = RET)
+
+data = data %>%
+  mutate(year = year(date), month = month(date))
+
+data = data %>% filter(abs(ret - mean(ret)) > 3 * sd(ret))
+
+head(data, 5)
+```
+
+Now we get a clean dataset with return and permno.
+
+## 2 Calculate Return
+
+To perform further analysis, we need to work on more data cleaning. First, we would want to calculate annual return for each stock. This could also be achieved by using pipeline.
+
+### 2.1 Annual Compounding Return
+
+Next, we want to calculate the annual return for each stock. To calculate annual return, we need to compound monthly return. We can do this using pipeline.
+
+```{r calcRet, include = TRUE, warning = F}
+annualRet_df = data %>%
+  group_by(permno, year) %>%
+  summarize(annualRet = prod(1 + ret) - 1)
+
+head(annualRet_df, 5)
+```
+
+### 2.2 Graph Mean Annual Return of the market
+
+To get a general sense of the security market, we want to plot the annual average return of the market using ggplot.
+
+We would first want to group it by year and then create a new variable called meanAnnualRet that is the average annual return over all stocks.
+
+```{r graphRet, include = T, warning = F}
+annualRet_df %>%
+  group_by(year) %>%
+  mutate(meanAnnualRet = mean(annualRet)) %>%
+  ggplot(mapping = aes(x = year, y = meanAnnualRet)) + geom_line()
+```
+
+We can tell the market is volatile. There is a significant negative return during year 2008 financial crisis.
+
+## 3. Momentum Portfolio
+
+### 3.1 How do we construct portfolio?
+
+In this tutorial, we want to construct our portfolio using only momentum. Momentum is a strong indication of a security's performance. Regarding mometum investing, you can read more about it here: https://www.investopedia.com/terms/m/momentum_investing.asp
+
+### 3.2 Create portfolio
+
+We want to create a momentun portfolio. In order to do that, we first want to find annual return for the past year and find the top decile and the bottom decile.
+Therefore, we could create our long portfolio, using top decile, and short portfolio, using the bottom decile of stocks.
+
+```{r momDataSet, include = T, warning = F}
+pastYear_df = annualRet_df %>%
+  mutate(year = year + 1) %>%
+  rename(past_ret = annualRet)
+
+pastYear_df = pastYear_df %>%
+  group_by(year) %>%
+  mutate(group = findInterval(past_ret, quantile(past_ret, c(0.1, 0.9), na.rm = T)))
+
+long = pastYear_df %>% 
+  filter(group == 2)
+
+short = pastYear_df %>% 
+  filter(group == 0)
+```
+
+### 3.3 Find Portfolio Return
+
+Now we need to find the actual portfolio return if we hold the portfolio for a year. We need to merge the long portfolio with the annual return dataframe to find the actual return of our portfolio. We need to use both the merge() and summarize() function to find mean annual return instead of return for each stock.
+
+After finding the long portfolio and short portfolio return, we need to construct our long-short portfolio return by using (long_ret - short_ret).
+
+We can get 
+
+```{r compData, include = T, warning = F}
+long_ret = merge(long, annualRet_df, by = c("permno","year"))
+
+long_ret = long_ret %>% 
+  group_by(year) %>%
+  summarize(long_ret = mean(annualRet))
+
+short_ret = merge(short, annualRet_df, by = c("permno", "year"))
+
+short_ret = short_ret %>%
+  group_by(year) %>%
+  summarize(short_ret = mean(annualRet))
+
+lsPort = merge(long_ret, short_ret, by = "year")
+
+lsPort = lsPort %>%
+  mutate(lsRet = long_ret - short_ret)
+
+head(lsPort, 10)
+```
+
+```{r lsGraph, include=T, warning=F}
+annualRet = annualRet_df %>% 
+  group_by(year) %>% 
+  summarize(annualRet = mean(annualRet))
+
+graph_df = merge(annualRet, lsPort, by = "year")
+
+graph_df %>%
+  ggplot() + 
+  geom_line(mapping = aes(x = year, y = lsRet), color = "darkblue") + 
+  geom_line(mapping = aes(x = year, y = annualRet), color = "red")
+```
+
+We can tell from our graph that our portfolio performed worse than the market on an annual basis. Therefore, past performance may not be a good indication of long-term future performance.
+
+## 4. Linear Regression and Hypothesis Testing
+
+We now have finished constructing our portfolio and visualization. The next step would be assess our portfolio's alpha and beta. We could use linear regression along with fama french data to do this.
+
+### 4.1 Load and Clean FF data
+
+First download FF 3 factor data from website provided in the introduction and import it by using read_csv().
+
+```{r ffData, include = T, warning=F, message=F}
+ff = read_csv("ff-3factor.CSV")
+ff = ff %>% 
+  rename(mktrf = `Mkt-RF`, smb = SMB, hml = HML, rf = RF)
+
+head(ff, 5)
+```
+
+We can tell that the date collumn iws a double instead of date format, we need to make it a date format.
+
+```{r ffClean, include=T, warning=F}
+ff = ff %>% 
+  mutate(date = ymd(paste(date, "01", sep = '')))
+
+ff = ff %>% 
+  mutate(year = year(date), month = month(date)) %>%
+  filter(month == 1)
+head(ff, 5)
+```
+
+### 4.2 Combine Data
+
+Now we have 3 factor data, let's combine it with our long short portfolio. The resulting dataframe is shown below.
+
+```{r ffComb, include=T, warning=F}
+lsPort = merge(lsPort, ff, by = "year")
+head(lsPort, 5)
+```
+
+### 4.3 Running Regression
+
+After combining ff data with our portfolio data, we can run the fama french regression using our combined data.
+
+```{r ffLM, include=T, warning=F}
+ff.fit = lm(lsRet~mktrf + smb+hml, data = lsPort)
+broom::tidy(ff.fit)
+```
+
+We can also see the anova table using anova() function
+
+```{r ffAnova, include = T, warning = F}
+anova(ff.fit)
+```
+
+### 4.4 Hypothesis Testing
+
+From our regression result, we can see that the intercept has an estimate of -0.2557 which means that the alpha is negative and not very good. Looking at the t-statistic and p.value, we can tell that we reject the null hypothesis at 0.05 significant level. Therefore, we can tell that our portfolio alpha is statistically significant.
+
+## 5. Conclusion
+
+After running our simulation, we can tell that momentum may not be a important factor if you want to hold on to a stock for a long time. In this tutorial, we walked through the key steps to construct a long-short portfolio using past returns and how to assess the performance of such portfolio. However, result shows that if we want to choose our portfolio based on past year performance and hold on to it for a year. There is a significant high chance of having a negative return. In fact, the alpha that we got from this tutorial was as high as -25.57% and was statistically significant.
+
+However, momentum is a significant factor in terms of quantitative models and stock selection. Therefore, I would suggest you reading more articles on such factor and more on data science.
+
+## 6. Resources
+
+Multiple Regression in R: https://www.statmethods.net/stats/regression.html
+Potfolio Analysis in R: https://rpubs.com/DanielSLee/IntroPortfolioAnalysis
+Fama-French Data: https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
